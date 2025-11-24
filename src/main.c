@@ -5,6 +5,8 @@
 #include "raylib.h"
 #include "CCFuncs.h"
 
+#define BLOCKS_SPRITESHEET_FILE "./assets/blocks.png"
+
 // how many columns per row should contain a panel
 #define PANEL_NUM_OF_COLS 6
 #define PANEL_NUM_OF_ROWS 12
@@ -15,17 +17,13 @@
 #define MIN(a, b) ((a) > (b) ? (b) : (a))
 #define MAX(a, b) ((a) < (b) ? (b) : (a))
 
-const Color BLOCK_COLORS[] = {
-    (Color){0}, YELLOW, PURPLE, GREEN, BLUE, RED, DARKBLUE,
-};
-
 typedef enum {
     PANEL_BLOCK_NONE = 0,
     PANEL_BLOCK_YELLOW,
+    PANEL_BLOCK_RED,
     PANEL_BLOCK_PURPLE,
     PANEL_BLOCK_GREEN,
     PANEL_BLOCK_BLUE,
-    PANEL_BLOCK_RED,
     PANEL_BLOCK_DARK_BLUE,
 } PanelBlockType;
 
@@ -50,6 +48,8 @@ typedef struct {
 
     float fallingTime; // used to count when the block should fall
 } Panel;
+
+Texture2D blocks;
 
 PanelBlock *get_block(Panel *panel, int row, int col) {
     return &panel->blocks[row][col];
@@ -83,6 +83,34 @@ void panel_update(Panel *panel) {
     gravity(panel);
 }
 
+void draw_block(PanelBlock *block, int x, int y, int width, int height) {
+    // TODO: this should be improved in the future
+    Rectangle rec = {
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 100,
+    };
+
+    switch(block->type) {
+        case PANEL_BLOCK_YELLOW:    rec.x = 0;   break;
+        case PANEL_BLOCK_RED:       rec.x = 100; break;
+        case PANEL_BLOCK_PURPLE:    rec.x = 200; break;
+        case PANEL_BLOCK_GREEN:     rec.x = 300; break;
+        case PANEL_BLOCK_BLUE:      rec.x = 400; break;
+        case PANEL_BLOCK_DARK_BLUE: rec.x = 500; break;
+        default: return;
+    }
+
+    Rectangle dest = {
+        .x = x,
+        .y = y,
+        .width = width,
+        .height = height,
+    };
+    DrawTexturePro(blocks, rec, dest, (Vector2){0, 0}, 0, WHITE);
+}
+
 void panel_draw(Panel *panel) {
     int blockWidth = panel->size.x / PANEL_NUM_OF_COLS;
     int blockHeight = panel->size.y / PANEL_NUM_OF_ROWS;
@@ -100,10 +128,10 @@ void panel_draw(Panel *panel) {
                 block->currentY = row;
             }
 
-            Color color = BLOCK_COLORS[block->type];
             int posX = panel->pos.x + blockWidth * col;
             int posY = panel->pos.y + blockHeight * block->currentY;
-            DrawRectangle(posX, posY, blockWidth, blockHeight, color);
+
+            draw_block(block, posX, posY, blockWidth, blockHeight);
         }
     }
 
@@ -167,11 +195,14 @@ int main(void) {
 
     srand(time(NULL));
 
-    // for(int i = 11; i > 5; i--) {
-    //     for(int j = 0; j < PANEL_NUM_OF_COLS; j++) {
-    //         panel.blocks[i][j].type = rand() % 6 + 1;
-    //     }
-    // }
+    blocks = LoadTexture(BLOCKS_SPRITESHEET_FILE);
+
+    for(int i = 11; i > 5; i--) {
+        for(int j = 0; j < PANEL_NUM_OF_COLS; j++) {
+            panel.blocks[i][j].type = rand() % 6 + 1;
+            panel.blocks[i][j].currentY = i;
+        }
+    }
 
     while(!WindowShouldClose()) {
         BeginDrawing();
