@@ -30,11 +30,20 @@ typedef enum {
 typedef struct {
     PanelBlockType type;
     float currentY; // used to fall smoothly
+    bool inCombo;
+    bool addedToCombo; // used to avoid creating new combos
 } PanelBlock;
 
 typedef struct {
     PanelBlock items[PANEL_NUM_OF_COLS];
 } PanelRow;
+
+typedef struct {
+    PanelBlock **items; // All the blocks positions that conform a combo
+    size_t count;
+    size_t capacity;
+    float time;
+} Combo;
 
 typedef struct {
     Vector2 pos;
@@ -47,6 +56,12 @@ typedef struct {
     } cursor;
 
     float fallingTime; // used to count when the block should fall
+
+    struct {
+        Combo *items;
+        size_t count;
+        size_t capacity;
+    } combos;
 } Panel;
 
 Texture2D blocks;
@@ -67,7 +82,7 @@ void gravity(Panel *panel) {
     for(int row = PANEL_NUM_OF_ROWS - 2; row >= 0; row--) {
         for(int col = 0; col < PANEL_NUM_OF_COLS; col++) {
             PanelBlock *block = get_block(panel, row, col);
-            if(block->type == PANEL_BLOCK_NONE) continue;
+            if(block->type == PANEL_BLOCK_NONE || block->inCombo) continue;
 
             PanelBlock *botBlock = get_block(panel, row + 1, col);
             if(botBlock->type != PANEL_BLOCK_NONE) continue;
@@ -79,11 +94,69 @@ void gravity(Panel *panel) {
     }
 }
 
+bool is_block_comboable(Panel *panel, int row, int col, PanelBlockType t) {
+    if(row >= PANEL_NUM_OF_ROWS || row < 0 || col >= PANEL_NUM_OF_COLS || col < 0)
+        return false;
+
+    PanelBlock b = panel->blocks[row][col];
+    return !b.addedToCombo && b.type == t;
+}
+
 void panel_update(Panel *panel) {
     gravity(panel);
+
+    for(int row = 0; row < PANEL_NUM_OF_ROWS; row++) {
+        for(int col = 0; col < PANEL_NUM_OF_COLS; col++) {
+            PanelBlock *curBlock = get_block(panel, row, col);
+            if(curBlock->type == PANEL_BLOCK_NONE || curBlock->addedToCombo) continue;
+
+            int xCount = 1;
+            while(is_block_comboable(panel, row, col + xCount, curBlock->type)) xCount++;
+
+            int yCount = 1;
+            while(is_block_comboable(panel, row + yCount, col, curBlock->type)) yCount++;
+
+            if(!curBlock->inCombo && (xCount >= 3 || yCount >= 3)) {
+                curBlock->inCombo = true;
+            }
+
+            if(xCount >= 3) {
+                while(xCount > 1) {
+                    PanelBlock *b = get_block(panel, row, col + xCount - 1);
+                    b->inCombo = curBlock->inCombo;
+                    xCount--;
+                }
+            }
+
+            if(yCount >= 3) {
+                while(yCount > 1) {
+                    PanelBlock *b = get_block(panel, row + yCount - 1, col);
+                    b->inCombo = curBlock->inCombo;
+                    yCount--;
+                }
+            }
+        }
+    }
+
+    Combo combo = {0};
+
+    for(int row = 0; row < PANEL_NUM_OF_ROWS; row++) {
+        for(int col = 0; col < PANEL_NUM_OF_COLS; col++) {
+            PanelBlock *block = get_block(panel, row, col);
+            if(!block->inCombo || block->addedToCombo) continue;
+            block->addedToCombo = true;
+            da_append(&combo, block);
+        }
+    }
+
+    if(combo.count > 0) {
+        da_append(&panel->combos, combo);
+    }
 }
 
 void draw_block(PanelBlock *block, int x, int y, int width, int height) {
+    if(block->inCombo) return;
+
     // TODO: this should be improved in the future
     Rectangle rec = {
         .x = 0,
@@ -109,6 +182,10 @@ void draw_block(PanelBlock *block, int x, int y, int width, int height) {
         .height = height,
     };
     DrawTexturePro(blocks, rec, dest, (Vector2){0, 0}, 0, WHITE);
+
+    if(block->inCombo) {
+        DrawRectangle(x, y, width, height, (Color){255, 255, 255, 120});
+    }
 }
 
 void panel_draw(Panel *panel) {
@@ -149,7 +226,9 @@ void panel_cursor_swap(Panel *panel) {
     int cursorY = panel->cursor.y;
 
     PanelBlock *left = get_block(panel, cursorY, cursorX);
+    if(left->inCombo) return;
     PanelBlock *right = get_block(panel, cursorY, cursorX + 1);
+    if(right->inCombo) return;
 
     PanelBlock temp = *left;
 
@@ -211,6 +290,36 @@ int main(void) {
         panel_update(&panel);
         panel_draw(&panel);
         player_controller(&panel);
+
+        float dt = GetFrameTime();
+
+        for(size_t i = 0; i < panel.combos.count; i++) {
+            Combo *combo = &panel.combos.items[i];
+            combo->time += dt;
+
+            if(combo->time >= 1) {
+                for(size_t i = 0; i < combo->count; i++) {
+                    PanelBlock *block = combo->items[i];
+                    *block = (PanelBlock){0};
+                }
+
+                da_free(combo);
+                da_remove_unordered(&panel.combos, i);
+
+                if(i > 0) i--;
+            }
+        }
+
+        // for(size_t i = 0; i < panel.combos.count; i++) {
+        //     Combo combo = panel.combos.items[i];
+        //
+        //     for(size_t j = 0; j < combo.count; j++) {
+        //         PanelBlock *block = combo.items[j];
+        //         int posX = panel->pos.x + 60 * col;
+        //         int posY = panel->pos.y + 60 * block->currentY;
+        //         draw_block(block, posX, posY, 60, 60);
+        //     }
+        // }
 
         EndDrawing();
     }

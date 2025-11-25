@@ -42,6 +42,15 @@
     } while (0)
 // end of taken code
 
+#define da_remove_unordered(da, pos)                        \
+    do {                                                    \
+        assert((pos) < (da)->count);                        \
+        if((pos) < (da)->count - 1) {                       \
+            (da)->items[pos] = (da)->items[(da)->count - 1];\
+        }                                                   \
+        (da)->count--;                                      \
+    } while(0)
+
 // printf like function that prints the name and line of the file where it was called
 #define log_error(msg, ...) _log_error(msg, __FILE__, __LINE__, __VA_ARGS__);
 
