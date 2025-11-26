@@ -14,6 +14,11 @@
 // the time that needs to be waited to make the blocks fall
 #define PANEL_BLOCK_FALLING_TIME 0.05
 
+ // the time we need to wait before starting to pop the combo's block
+#define PANEL_POP_IDLE_DURATION 0.5
+// the duration of each block pop
+#define PANEL_POP_BLOCK_DURATION 0.1
+
 #define MIN(a, b) ((a) > (b) ? (b) : (a))
 #define MAX(a, b) ((a) < (b) ? (b) : (a))
 
@@ -32,17 +37,19 @@ typedef struct {
     float currentY; // used to fall smoothly
     bool inCombo;
     bool addedToCombo; // used to avoid creating new combos
-} PanelBlock;
 
-typedef struct {
-    PanelBlock items[PANEL_NUM_OF_COLS];
-} PanelRow;
+    // the actual position on the matrix
+    int row;
+    int col;
+
+    bool falling;
+} PanelBlock;
 
 typedef struct {
     PanelBlock **items; // All the blocks positions that conform a combo
     size_t count;
     size_t capacity;
-    float time;
+    float time; // life time of the combo since its creation
 } Combo;
 
 typedef struct {
@@ -51,8 +58,7 @@ typedef struct {
     PanelBlock blocks[PANEL_NUM_OF_ROWS][PANEL_NUM_OF_COLS];
 
     struct {
-        int x;
-        int y;
+        int x; int y;
     } cursor;
 
     float fallingTime; // used to count when the block should fall
@@ -90,54 +96,87 @@ void gravity(Panel *panel) {
             PanelBlock temp = *block;
             *block = *botBlock;
             *botBlock = temp;
+
+            // only change the block that is not empty
+            botBlock->row++;
         }
     }
 }
 
+// returns true if the given block is:
+// - not outside the blocks array boundaries
+// - not part of a combo
+// - the same type as the given t
+// - is not falling
 bool is_block_comboable(Panel *panel, int row, int col, PanelBlockType t) {
     if(row >= PANEL_NUM_OF_ROWS || row < 0 || col >= PANEL_NUM_OF_COLS || col < 0)
         return false;
 
     PanelBlock b = panel->blocks[row][col];
-    return !b.addedToCombo && b.type == t;
+    return !b.addedToCombo && !b.falling && b.type == t;
 }
 
-void panel_update(Panel *panel) {
-    gravity(panel);
+void block_smooth_falling(PanelBlock *block) {
+    if(block->type == PANEL_BLOCK_NONE) return;
+    float dt = GetFrameTime();
 
-    for(int row = 0; row < PANEL_NUM_OF_ROWS; row++) {
-        for(int col = 0; col < PANEL_NUM_OF_COLS; col++) {
-            PanelBlock *curBlock = get_block(panel, row, col);
-            if(curBlock->type == PANEL_BLOCK_NONE || curBlock->addedToCombo) continue;
+    if(block->currentY < block->row) {
+        // the falling animation time should be the same as the actual falling
+        block->currentY += 1.0 / PANEL_BLOCK_FALLING_TIME * dt;
+        block->falling = true;
+    } else if(block->currentY > block->row) {
+        block->currentY = block->row;
+        block->falling = false;
+    }
+}
 
-            int xCount = 1;
-            while(is_block_comboable(panel, row, col + xCount, curBlock->type)) xCount++;
+// Returns true if a combo was found
+bool find_block_combo(Panel *panel, int row, int col) {
+    PanelBlock *curBlock = get_block(panel, row, col);
+    // if "addedToCombo" is true it means it's part of an existing combo
+    if(curBlock->type == PANEL_BLOCK_NONE
+        || curBlock->addedToCombo
+        || curBlock->falling) return false;
 
-            int yCount = 1;
-            while(is_block_comboable(panel, row + yCount, col, curBlock->type)) yCount++;
+    // here we check the right blocks
+    int xCount = 1;
+    while(is_block_comboable(panel, row, col + xCount, curBlock->type)) xCount++;
 
-            if(!curBlock->inCombo && (xCount >= 3 || yCount >= 3)) {
-                curBlock->inCombo = true;
-            }
+    // and here we check the bottom blocks
+    int yCount = 1;
+    while(is_block_comboable(panel, row + yCount, col, curBlock->type)) yCount++;
 
-            if(xCount >= 3) {
-                while(xCount > 1) {
-                    PanelBlock *b = get_block(panel, row, col + xCount - 1);
-                    b->inCombo = curBlock->inCombo;
-                    xCount--;
-                }
-            }
+    bool foundCombo = false;
 
-            if(yCount >= 3) {
-                while(yCount > 1) {
-                    PanelBlock *b = get_block(panel, row + yCount - 1, col);
-                    b->inCombo = curBlock->inCombo;
-                    yCount--;
-                }
-            }
+    // here we mark the this block as part of the combo, this allows "create_combo" function
+    // to add all blocks accordingly
+    if(!curBlock->inCombo && (xCount >= 3 || yCount >= 3)) {
+        curBlock->inCombo = true;
+        foundCombo = true;
+    }
+
+    // we must set the other blocks as "inCombo" since they will not check
+    // top or left blocks
+    if(xCount >= 3) {
+        while(xCount > 1) {
+            PanelBlock *b = get_block(panel, row, col + xCount - 1);
+            b->inCombo = true;
+            xCount--;
         }
     }
 
+    if(yCount >= 3) {
+        while(yCount > 1) {
+            PanelBlock *b = get_block(panel, row + yCount - 1, col);
+            b->inCombo = true;
+            yCount--;
+        }
+    }
+
+    return foundCombo;
+}
+
+void create_combo(Panel *panel) {
     Combo combo = {0};
 
     for(int row = 0; row < PANEL_NUM_OF_ROWS; row++) {
@@ -149,9 +188,25 @@ void panel_update(Panel *panel) {
         }
     }
 
-    if(combo.count > 0) {
-        da_append(&panel->combos, combo);
+    assert(combo.count > 0 && "You shouldn't call this function if there's no combos available");
+    da_append(&panel->combos, combo);
+}
+
+void panel_update(Panel *panel) {
+    gravity(panel);
+
+    bool foundCombo = false;
+
+    for(int row = 0; row < PANEL_NUM_OF_ROWS; row++) {
+        for(int col = 0; col < PANEL_NUM_OF_COLS; col++) {
+            PanelBlock *block = get_block(panel, row, col);
+            block_smooth_falling(block);
+
+            if(find_block_combo(panel, row, col)) foundCombo = true;
+        }
     }
+
+    if(foundCombo) create_combo(panel);
 }
 
 void draw_block(PanelBlock *block, int x, int y, int width, int height) {
@@ -188,27 +243,53 @@ void draw_block(PanelBlock *block, int x, int y, int width, int height) {
     }
 }
 
+void draw_combo_block(PanelBlock *block, int x, int y, int width, int height) {
+    // TODO: this should be improved in the future
+    Rectangle rec = {
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 100,
+    };
+
+    switch(block->type) {
+        case PANEL_BLOCK_YELLOW:    rec.x = 0;   break;
+        case PANEL_BLOCK_RED:       rec.x = 100; break;
+        case PANEL_BLOCK_PURPLE:    rec.x = 200; break;
+        case PANEL_BLOCK_GREEN:     rec.x = 300; break;
+        case PANEL_BLOCK_BLUE:      rec.x = 400; break;
+        case PANEL_BLOCK_DARK_BLUE: rec.x = 500; break;
+        default: return;
+    }
+
+    Rectangle dest = {
+        .x = x,
+        .y = y,
+        .width = width,
+        .height = height,
+    };
+    DrawTexturePro(blocks, rec, dest, (Vector2){0, 0}, 0, WHITE);
+    DrawRectangle(x, y, width, height, (Color){255, 255, 255, 120});
+}
+
 void panel_draw(Panel *panel) {
     int blockWidth = panel->size.x / PANEL_NUM_OF_COLS;
     int blockHeight = panel->size.y / PANEL_NUM_OF_ROWS;
 
-    float dt = GetFrameTime();
-
     for(int row = 0; row < PANEL_NUM_OF_ROWS; row++) {
         for(int col = 0; col < PANEL_NUM_OF_COLS; col++) {
             PanelBlock *block = get_block(panel, row, col);
-
-            if(block->currentY < row) {
-                // the falling animation time should be the same as the actual falling
-                block->currentY += 1.0 / PANEL_BLOCK_FALLING_TIME * dt;
-            } else if(block->currentY > row) {
-                block->currentY = row;
-            }
+            if(block->type == PANEL_BLOCK_NONE) continue;
 
             int posX = panel->pos.x + blockWidth * col;
             int posY = panel->pos.y + blockHeight * block->currentY;
 
             draw_block(block, posX, posY, blockWidth, blockHeight);
+
+#ifdef DEBUG
+            const char *info = TextFormat("(%d, %d)", block->col, block->row);
+            DrawText(info, posX + blockWidth / 2, posY + blockHeight / 2, 10, WHITE);
+#endif
         }
     }
 
@@ -234,6 +315,9 @@ void panel_cursor_swap(Panel *panel) {
 
     *left = *right;
     *right = temp;
+
+    if(right->type != PANEL_BLOCK_NONE) right->col++;
+    if(left->type != PANEL_BLOCK_NONE) left->col--;
 }
 
 void player_controller(Panel *panel) {
@@ -253,14 +337,6 @@ void player_controller(Panel *panel) {
     if(IsKeyPressed(KEY_X)) {
         panel_cursor_swap(panel);
     }
-
-    // DEBUG
-    if(IsKeyPressed(KEY_S)) {
-        panel->blocks[0][0].type = PANEL_BLOCK_DARK_BLUE;
-        panel->blocks[0][0].currentY = 0;
-        panel->blocks[1][0].type = PANEL_BLOCK_GREEN;
-        panel->blocks[1][0].currentY = 1;
-    }
 }
 
 int main(void) {
@@ -269,7 +345,7 @@ int main(void) {
 
     Panel panel = {
         .pos = {0, 0},
-        .size = {370, 720}
+        .size = {360, 720}
     };
 
     srand(time(NULL));
@@ -280,6 +356,8 @@ int main(void) {
         for(int j = 0; j < PANEL_NUM_OF_COLS; j++) {
             panel.blocks[i][j].type = rand() % 6 + 1;
             panel.blocks[i][j].currentY = i;
+            panel.blocks[i][j].col = j;
+            panel.blocks[i][j].row = i;
         }
     }
 
@@ -293,11 +371,12 @@ int main(void) {
 
         float dt = GetFrameTime();
 
+        // the animation is kinds ugly, but it works for now
         for(size_t i = 0; i < panel.combos.count; i++) {
             Combo *combo = &panel.combos.items[i];
             combo->time += dt;
 
-            if(combo->time >= 1) {
+            if(combo->time >= (float)combo->count * PANEL_POP_BLOCK_DURATION + PANEL_POP_IDLE_DURATION) {
                 for(size_t i = 0; i < combo->count; i++) {
                     PanelBlock *block = combo->items[i];
                     *block = (PanelBlock){0};
@@ -310,16 +389,23 @@ int main(void) {
             }
         }
 
-        // for(size_t i = 0; i < panel.combos.count; i++) {
-        //     Combo combo = panel.combos.items[i];
-        //
-        //     for(size_t j = 0; j < combo.count; j++) {
-        //         PanelBlock *block = combo.items[j];
-        //         int posX = panel->pos.x + 60 * col;
-        //         int posY = panel->pos.y + 60 * block->currentY;
-        //         draw_block(block, posX, posY, 60, 60);
-        //     }
-        // }
+        int blockWidth = panel.size.x / PANEL_NUM_OF_COLS;
+        int blockHeight = panel.size.y / PANEL_NUM_OF_ROWS;
+
+        for(size_t i = 0; i < panel.combos.count; i++) {
+            Combo combo = panel.combos.items[i];
+
+            for(size_t j = 0; j < combo.count; j++) {
+                if(combo.time > ((float)j + 1) * PANEL_POP_BLOCK_DURATION + PANEL_POP_IDLE_DURATION)
+                    continue;
+
+                PanelBlock *block = combo.items[j];
+                int posX = panel.pos.x + blockWidth * block->col;
+                int posY = panel.pos.y + blockHeight * block->row;
+
+                draw_combo_block(block, posX, posY, 60, 60);
+            }
+        }
 
         EndDrawing();
     }
